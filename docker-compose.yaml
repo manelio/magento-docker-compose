@@ -1,0 +1,183 @@
+version: '3.2'
+
+services:
+  ingress:
+    image: haproxy:1.9-alpine
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./etc/haproxy:/usr/local/etc/haproxy
+      - cert-data:/certs
+      - ${INGRESS_RUN_DIRECTORY:-./var/run}:/local/run
+    depends_on:
+      - nginx
+    environment:
+      - COMPOSE_PROJECT_NAME
+      - INGRESS_RUN_DIRECTORY
+    command: haproxy -f /usr/local/etc/haproxy/haproxy.ssl.cfg
+
+  nginx-acme:
+    image: nginx:alpine
+    volumes:
+      - $HOME/www:/usr/share/nginx/html
+
+  varnish:
+    image: varnish:6.0
+    restart: always
+    volumes:
+      - ./etc/varnish/app.vcl:/etc/varnish/default.vcl
+
+    tmpfs:
+    - /var/lib/varnish/varnishd:exec
+
+    depends_on:
+      - nginx
+
+  # webpack:
+  #   image: node:slim
+  #   restart: always
+  #   volumes:
+  #     - ${ROOT:-./www}:/var/www
+  #   working_dir: /var/www
+  #   command: npm run watch
+
+  nginx:
+    image: nginx:1.17
+    restart: always
+    volumes:
+      - ./etc/nginx/conf.d:/etc/nginx/conf.d
+      - ${ROOT:-./www}:/var/www
+      - ${SHARED:-./var/shared}:/shared
+
+    command: [nginx, '-g', 'daemon off;']
+    depends_on:
+      - php-fpm
+
+  php-fpm:
+    image: admibox/php:7.4-fpm
+    user: ${HOST_UID:-0}:${HOST_GID:-0}
+    restart: always
+    environment:
+      - "WAIT_FOR_FILES=/shhh/mysql:root.shhh /shhh/mysql:user.shhh"
+      - SENDMAIL_COMMAND=${PHP_FPM_SENDMAIL_COMMAND:-"msmtp --host=mailhog --protocol=smtp --port=1025 --read-envelope-from -t"}
+      - PHP_AUTO_PREPEND_FILE=${PHP_FPM_AUTO_PREPEND_FILE:-/var/www/prepend.php.inc}
+    volumes:
+      - ${ROOT:-./www}:/var/www
+      - ${SHARED:-./var/shared}:/shared
+      - shhh-data:/shhh
+      - ./etc/php:/usr/local/share/php
+      - ./etc/php-fpm/ecommpro.conf:/usr/local/etc/php-fpm.d/ecommpro.conf
+      - ./etc/php-fpm/entrypoint.sh:/usr/local/bin/custom-entrypoint.sh
+      - ./etc/php-fpm/conf.d:/usr/local/etc/php/conf.d
+    depends_on:
+      - db
+    entrypoint: custom-entrypoint.sh
+
+  db:
+    image: mariadb:10.4
+    restart: always
+    environment:
+      - MYSQL_DATABASE=app
+      - MYSQL_USER=app
+      - MYSQL_ROOT_PASSWORD_FILE=/shhh/mysql:root.shhh
+      - MYSQL_PASSWORD_FILE=/shhh/mysql:user.shhh
+      - "WAIT_FOR_FILES=/shhh/mysql:root.shhh /shhh/mysql:user.shhh"
+    volumes:
+      - shhh-data:/shhh
+      - mysql-data:/var/lib/mysql
+      - ./etc/mariadb/alt-docker-entrypoint.sh:/usr/local/bin/alt-docker-entrypoint.sh
+    depends_on:
+      - shhh
+    entrypoint: alt-docker-entrypoint.sh
+
+  shhh:
+    image: ecommpro/shhh
+    volumes:
+      - shhh-data:/shhh
+    environment:
+        - SHHH_ROOT=/shhh
+        - "SECRETS=mysql:root mysql:user"
+
+  php-cli:
+    image: admibox/php:7.4-cli
+    user: ${HOST_UID:-0}:${HOST_GID:-0}
+    working_dir: /var/www/current
+    restart: always
+    environment:
+      - HOME=/work
+      - COMPOSER_HOME=/work/.local/composer
+      - DOMAIN
+      - NAME
+      - PRO_ENV
+      - PRO_PRJ
+      - SENDMAIL_COMMAND=${PHP_CLI_SENDMAIL_COMMAND:-"msmtp --host=mailhog --protocol=smtp --port=1025 --read-envelope-from -t"}
+      - PHP_AUTO_PREPEND_FILE=${PHP_CLI_AUTO_PREPEND_FILE:-/var/www/prepend.php.inc}
+    volumes:
+      - ${ROOT:-./www}:/var/www
+      - ${SHARED:-./var/shared}:/shared
+      - shhh-data:/shhh
+      - ./etc/php:/usr/local/share/php
+      - ./etc/php-cli/conf.d:/usr/local/etc/php/conf.d
+      - ./etc/php-cli/entrypoint.sh:/usr/local/bin/custom-entrypoint.sh
+      - ./var/php-cli:/work
+    command: /var/www/current/async.sh
+
+  redis-session:
+    image: redis:5
+    restart: always
+    sysctls:
+      - net.core.somaxconn=65535
+    volumes:
+      - ./etc/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+
+  redis-cache:
+    image: redis:5
+    restart: always
+    sysctls:
+      - net.core.somaxconn=65535
+    volumes:
+      - ./etc/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+
+  redis-fpc:
+    image: redis:5
+    restart: always
+    sysctls:
+      - net.core.somaxconn=65535
+    volumes:
+      - ./etc/redis-fpc/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+
+  rabbitmq:
+    image: rabbitmq
+    restart: always
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.8.1
+    restart: always
+    
+    environment:
+      - discovery.type=single-node
+      - node.name=es01
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es01:/usr/share/elasticsearch/data
+
+  mailhog:
+    restart: always
+    environment:
+      - MH_UI_WEB_PATH=mailhog
+    image: mailhog/mailhog:latest
+
+volumes:
+  shhh-data:
+  cert-data:
+  mysql-data:
+  es01:
+  

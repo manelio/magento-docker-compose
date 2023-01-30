@@ -1,0 +1,14 @@
+#!/bin/ash
+export COMPOSER_HOME=$HOME
+[ ! -f bin/magento ] && composer create-project --no-install --repository=https://repo.magento.com/ magento/project-community-edition magento2 && mv magento2/* . && mv magento2/.[!.]* . && rm -fr magento2 && composer install
+
+
+while ! ls /shhh/mysql:user.shhh >/dev/null 2>&1; do echo "Waiting for password ..."; sleep 3; done;
+
+php -d memory_limit=-1 bin/magento setup:install --base-url="https://$DOMAIN/" \
+--db-host=db --db-name=app \
+--db-user=app --db-password="$(cat /shhh/mysql:user.shhh)" \
+--admin-firstname=Ecomm --admin-lastname=Pro --admin-email=${ADMIN_EMAIL:-dev@ecomm.pro} \
+--admin-user=${ADMIN_USER:-m2admin} --admin-password=${ADMIN_PASSWORD:-m2admin123} --language=${LANGUAGE:-en_US} \
+--currency=${CURRENCY:-USD} --timezone=${TIMEZONE:-Europe/Madrid} --cleanup-database \
+--session-save=db --use-rewrites=1
